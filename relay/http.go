@@ -10,12 +10,14 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/influxdata/influxdb/influxql"
 	"github.com/influxdata/influxdb/models"
 )
 
@@ -113,15 +115,23 @@ func (h *HTTP) Stop() error {
 func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
-	if r.URL.Path == "/ping" && (r.Method == "GET" || r.Method == "HEAD") {
-			w.Header().Add("X-InfluxDB-Version", "relay")
-			w.WriteHeader(http.StatusNoContent)
-			return
+	reqPath := r.URL.Path
+
+	if reqPath == "/ping" && (r.Method == "GET" || r.Method == "HEAD") {
+		w.Header().Add("X-InfluxDB-Version", "relay")
+		w.WriteHeader(http.StatusNoContent)
+		return
 	}
 
-	if r.URL.Path != "/write" {
+	if reqPath != "/write" && reqPath != "/query" {
 		jsonError(w, http.StatusNotFound, "invalid write endpoint")
 		return
+	}
+
+	// We are using a flag to handle the create databases
+	isQuery := false
+	if reqPath == "/query" {
+		isQuery = true
 	}
 
 	if r.Method != "POST" {
@@ -136,8 +146,25 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	queryParams := r.URL.Query()
 
+	// Don't pass through non create queries
+	if isQuery {
+		// First check if there are multiple queries being passed
+		qry, err := influxql.ParseQuery(queryParams["q"][0])
+		if err != nil {
+			jsonError(w, http.StatusBadRequest, "invalid query")
+			return
+		}
+		for _, stmt := range qry.Statements {
+			_, ok := stmt.(*influxql.CreateDatabaseStatement)
+			if !ok {
+				jsonError(w, http.StatusBadRequest, "query not supported, relay only supports CREATE DATABASE queries")
+				return
+			}
+		}
+	}
+
 	// fail early if we're missing the database
-	if queryParams.Get("db") == "" {
+	if !isQuery && queryParams.Get("db") == "" {
 		jsonError(w, http.StatusBadRequest, "missing parameter: db")
 		return
 	}
@@ -209,7 +236,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		b := b
 		go func() {
 			defer wg.Done()
-			resp, err := b.post(outBytes, query, authHeader)
+			resp, err := b.post(outBytes, query, authHeader, isQuery)
 			if err != nil {
 				log.Printf("Problem posting to relay %q backend %q: %v", h.Name(), b.name, err)
 			} else {
@@ -232,7 +259,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for resp := range responses {
 		switch resp.StatusCode / 100 {
 		case 2:
-			w.WriteHeader(http.StatusNoContent)
+			w.WriteHeader(resp.StatusCode)
 			return
 
 		case 4:
@@ -286,12 +313,13 @@ func jsonError(w http.ResponseWriter, code int, message string) {
 }
 
 type poster interface {
-	post([]byte, string, string) (*responseData, error)
+	post([]byte, string, string, bool) (*responseData, error)
 }
 
 type simplePoster struct {
-	client   *http.Client
-	location string
+	client *http.Client
+	write  string
+	query  string
 }
 
 func newSimplePoster(location string, timeout time.Duration, skipTLSVerification bool) *simplePoster {
@@ -303,17 +331,27 @@ func newSimplePoster(location string, timeout time.Duration, skipTLSVerification
 		},
 	}
 
+	// Ignore error because location is checked in the config
+	qryURL, _ := url.Parse(location)
+	qryURL.Path = "/query"
 	return &simplePoster{
 		client: &http.Client{
 			Timeout:   timeout,
 			Transport: transport,
 		},
-		location: location,
+		write: location,
+		query: qryURL.String(),
 	}
 }
 
-func (b *simplePoster) post(buf []byte, query string, auth string) (*responseData, error) {
-	req, err := http.NewRequest("POST", b.location, bytes.NewReader(buf))
+func (b *simplePoster) post(buf []byte, query string, auth string, q bool) (*responseData, error) {
+	var loc string
+	if q {
+		loc = b.query
+	} else {
+		loc = b.write
+	}
+	req, err := http.NewRequest("POST", loc, bytes.NewReader(buf))
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"net/url"
 	"os"
 
 	"github.com/naoina/toml"
@@ -89,6 +90,17 @@ func LoadConfigFile(filename string) (cfg Config, err error) {
 		return cfg, err
 	}
 	defer f.Close()
-
-	return cfg, toml.NewDecoder(f).Decode(&cfg)
+	err = toml.NewDecoder(f).Decode(&cfg)
+	if err != nil {
+		return
+	}
+	// Validate HTTP endpoints
+	for _, b := range cfg.HTTPRelays {
+		for _, o := range b.Outputs {
+			if _, err = url.ParseRequestURI(o.Location); err != nil {
+				return
+			}
+		}
+	}
+	return
 }

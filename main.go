@@ -26,6 +26,7 @@ func main() {
 	cfg, err := relay.LoadConfigFile(*configFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Problem loading config file:", err)
+		os.Exit(1)
 	}
 
 	r, err := relay.New(cfg)
