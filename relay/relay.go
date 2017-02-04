@@ -36,6 +36,17 @@ func New(config Config) (*Service, error) {
 		s.relays[u.Name()] = u
 	}
 
+	for _, cfg := range config.Collectd2HTTPRelays {
+		u, err := NewCollectd2Http(cfg)
+		if err != nil {
+			return nil, err
+		}
+		if s.relays[u.Name()] != nil {
+			return nil, fmt.Errorf("duplicate relay: %q", u.Name())
+		}
+		s.relays[u.Name()] = u
+	}
+
 	return s, nil
 }
 

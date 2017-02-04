@@ -356,7 +356,9 @@ func (b *simplePoster) post(buf []byte, query string, auth string, q bool) (*res
 		return nil, err
 	}
 
-	req.URL.RawQuery = query
+	if query != "" {
+		req.URL.RawQuery = query
+	}
 	req.Header.Set("Content-Type", "text/plain")
 	req.Header.Set("Content-Length", strconv.Itoa(len(buf)))
 	if auth != "" {

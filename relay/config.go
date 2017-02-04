@@ -8,8 +8,9 @@ import (
 )
 
 type Config struct {
-	HTTPRelays []HTTPConfig `toml:"http"`
-	UDPRelays  []UDPConfig  `toml:"udp"`
+	HTTPRelays          []HTTPConfig          `toml:"http"`
+	UDPRelays           []UDPConfig           `toml:"udp"`
+	Collectd2HTTPRelays []Collectd2HTTPConfig `toml:"collectd2http"`
 }
 
 type HTTPConfig struct {
@@ -82,6 +83,32 @@ type UDPOutputConfig struct {
 	// MTU sets the maximum output payload size, default is 1024
 	MTU int `toml:"mtu"`
 }
+
+type Collectd2HTTPConfig struct {
+	// Name identifies the Collectd2HTTP relay
+	Name string `toml:"name"`
+
+	// Addr is where the UDP relay will listen for packets
+	Addr string `toml:"bind-addr"`
+
+	TypesDBPath string `toml:"typesdb"`
+
+	// ReadBuffer sets the socket buffer for incoming connections
+	ReadBuffer int `toml:"read-buffer"`
+
+	// Outputs is a list of backend servers where writes will be forwarded
+	//Shards []Collectd2HTTPShardConfig`toml:"shards"`
+	Outputs []HTTPOutputConfig`toml:"output"`
+}
+
+/*type Collectd2HTTPShardConfig struct {
+	// Name identifies the UDP backend
+	Name string `toml:"name"`
+
+	ProvisionWeight float64 `toml:"provision_weight"`
+
+	Outputs []HTTPOutputConfig `toml:"output"`
+}*/
 
 // LoadConfigFile parses the specified file into a Config object
 func LoadConfigFile(filename string) (cfg Config, err error) {
