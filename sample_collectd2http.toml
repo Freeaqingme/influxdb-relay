@@ -4,7 +4,13 @@ name = "example-collectd2http"
 bind-addr = "127.1.1.1:25826"
 read-buffer = 0 # default
 typesdb = "/usr/share/collectd/types.db"
-output = [
-    { name="local1", location = "http://127.0.0.1:8086/write?db=shard1" },
-    { name="local2", location = "http://127.0.0.1:8086/write?db=shard2" },
+shards = [
+    { name="shard1", provision_weight=100, output = [
+            { name="local1-1", location = "http://127.0.0.1:8086/write?db=shard1-1", buffer-size-mb = 1024, max-batch-kb = 50, max-delay-interval = "30m" },
+            { name="local1-2", location = "http://127.0.0.1:8086/write?db=shard1-1", buffer-size-mb = 1024, max-batch-kb = 50, max-delay-interval = "30m" },
+    ]},
+    { name="shard2", provision_weight=100, output = [
+            { name="local2-1", location = "http://127.0.0.1:8086/write?db=shard2-1", buffer-size-mb = 1024, max-batch-kb = 50, max-delay-interval = "30m"  },
+            { name="local2-2", location = "http://127.0.0.1:8086/write?db=shard2-2", buffer-size-mb = 1024, max-batch-kb = 50, max-delay-interval = "30m"  },
+    ]}
 ]

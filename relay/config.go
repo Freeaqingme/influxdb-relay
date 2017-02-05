@@ -97,18 +97,17 @@ type Collectd2HTTPConfig struct {
 	ReadBuffer int `toml:"read-buffer"`
 
 	// Outputs is a list of backend servers where writes will be forwarded
-	//Shards []Collectd2HTTPShardConfig`toml:"shards"`
-	Outputs []HTTPOutputConfig `toml:"output"`
+	Shards []Collectd2HTTPShardConfig `toml:"shardsColl"`
 }
 
-/*type Collectd2HTTPShardConfig struct {
+type Collectd2HTTPShardConfig struct {
 	// Name identifies the UDP backend
 	Name string `toml:"name"`
 
-	ProvisionWeight float64 `toml:"provision_weight"`
+	ProvisionWeight uint32 `toml:"provision_weight"`
 
 	Outputs []HTTPOutputConfig `toml:"output"`
-}*/
+}
 
 // LoadConfigFile parses the specified file into a Config object
 func LoadConfigFile(filename string) (cfg Config, err error) {

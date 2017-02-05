@@ -24,8 +24,8 @@ type Collectd2HTTP struct {
 	l       *net.UDPConn
 
 	collectdTypes *gollectd.Types
-	points        chan models.Point
-	backends      []*httpBackend
+	points        map[string]chan models.Point
+	shardsColl    *shardCollection
 }
 
 func NewCollectd2Http(config Collectd2HTTPConfig) (Relay, error) {
@@ -57,15 +57,15 @@ func NewCollectd2Http(config Collectd2HTTPConfig) (Relay, error) {
 		return nil, err
 	}
 	u.collectdTypes = &types
-	u.points = make(chan models.Point, 1024)
 
-	for i := range config.Outputs {
-		backend, err := newHTTPBackend(&config.Outputs[i])
-		if err != nil {
-			return nil, err
-		}
+	u.shardsColl, err = NewShardCollection(config.Shards)
+	if err != nil {
+		return nil, err
+	}
 
-		u.backends = append(u.backends, backend)
+	u.points = make(map[string]chan models.Point)
+	for _, shard := range u.shardsColl.Shards() {
+		u.points[shard.Name()] = make(chan models.Point, 1024)
 	}
 
 	return u, nil
@@ -86,7 +86,9 @@ func (u *Collectd2HTTP) Run() error {
 	packetQueue := make(chan packet, 1024)
 	var wg sync.WaitGroup
 	go u.handlePacketQueue(&wg, packetQueue)
-	go u.batchPoints()
+	for _, shard := range u.shardsColl.Shards() {
+		go u.batchPoints(shard)
+	}
 
 	log.Printf("Starting Collectd2HTTP relay %q on %v", u.Name(), u.l.LocalAddr())
 
@@ -115,17 +117,17 @@ func (u *Collectd2HTTP) Run() error {
 	}
 }
 
-func (u *Collectd2HTTP) batchPoints() {
+func (u *Collectd2HTTP) batchPoints(shard shard) {
 	batch := make([]string, 0, 5000)
 	batchLen := 0
 	ticker := time.Tick(500 * time.Millisecond)
 
 	submitBatch := func() {
-		log.Printf("Submitting batch of length: %d (%d)\n", len(batch), batchLen)
+		log.Printf("Submitting batch of length in shard '%s': %d (%d)\n", shard.Name(), len(batch), batchLen)
 
 		payload := []byte(strings.Join(batch, "\n") + "\n")
 		wg := &sync.WaitGroup{}
-		for _, b := range u.backends {
+		for _, b := range shard.backends {
 			wg.Add(1)
 			go func(b *httpBackend, wg *sync.WaitGroup) {
 				resp, err := b.post(payload, "", "", false)
@@ -137,7 +139,7 @@ func (u *Collectd2HTTP) batchPoints() {
 					}
 				}
 				wg.Done()
-			}(b, wg)
+			}(&b, wg)
 		}
 		wg.Wait()
 		batch = make([]string, 0, 5000)
@@ -147,7 +149,7 @@ func (u *Collectd2HTTP) batchPoints() {
 	var line string
 	for {
 		select {
-		case p := <-u.points:
+		case p := <-u.points[shard.Name()]:
 			line = p.String()
 			batchLen += len(line) + 1
 			if batchLen > DefaultBatchSizeKB*KB {
@@ -182,7 +184,12 @@ func (u *Collectd2HTTP) handlePacket(udpPacket *packet) {
 	collectd := collectd.NewService(config)
 	for _, packet := range *packets {
 		for _, point := range collectd.UnmarshalCollectd(&packet) {
-			u.points <- point
+			shard := u.shardsColl.GetShardForPoint(point)
+			if shard == nil {
+				log.Print("No shard found for point: " + point.String())
+				continue
+			}
+			u.points[shard.Name()] <- point
 		}
 	}
 
