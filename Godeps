@@ -4,5 +4,7 @@ github.com/naoina/toml 751171607256bb66e64c9f0220c00662420c38e9
 github.com/gogo/protobuf/proto fb8a359905af6e2b6517cccda0ba25915322ee88
 github.com/kimor79/gollectd b5dddb1667dcc1e6355b9305e2c1608a2db6983c
 github.com/twmb/murmur3 1556ee6aa54ef9c1f3d999c03e28936045edca6a
+github.com/Freeaqingme/go-cache 249f01f69118e4d7d42c9163b41653dd370bedc0
 golang.org/x/crypto/bcrypt bed12803fa9663d7aa2c2346b0c634ad2dcd43b7
 golang.org/x/net/websocket 41bba8d80bbfab43231ffdf4c210037baae5f6a3
+github.com/aristanetworks/goarista b0e49c238c066506cefd63181b73b282ccd84708
