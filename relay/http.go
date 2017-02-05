@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -114,7 +115,6 @@ func (h *HTTP) Stop() error {
 
 func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-
 	reqPath := r.URL.Path
 
 	if reqPath == "/ping" && (r.Method == "GET" || r.Method == "HEAD") {
@@ -123,8 +123,27 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if reqPath != "/write" && reqPath != "/query" {
-		jsonError(w, http.StatusNotFound, "invalid write endpoint")
+	if reqPath == "/status" && (r.Method == "GET" || r.Method == "HEAD") {
+		st := make(map[string]map[string]string)
+
+		for _, b := range h.backends {
+			st[b.name] = b.poster.getStats()
+		}
+
+		j, err := json.Marshal(st)
+
+		if err != nil {
+			log.Printf("error: %s", err)
+			jsonResponse(w, http.StatusInternalServerError, "json marshalling failed")
+			return
+		}
+
+		jsonResponse(w, http.StatusOK, fmt.Sprintf("\"status\": %s", string(j)))
+		return
+	}
+
+	if reqPath != "/write" {
+		jsonResponse(w, http.StatusNotFound, "invalid write endpoint")
 		return
 	}
 
@@ -139,7 +158,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusNoContent)
 		} else {
-			jsonError(w, http.StatusMethodNotAllowed, "invalid write method")
+			jsonResponse(w, http.StatusMethodNotAllowed, "invalid write method")
 		}
 		return
 	}
@@ -151,13 +170,13 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// First check if there are multiple queries being passed
 		qry, err := influxql.ParseQuery(queryParams["q"][0])
 		if err != nil {
-			jsonError(w, http.StatusBadRequest, "invalid query")
+			jsonResponse(w, http.StatusBadRequest, "invalid query")
 			return
 		}
 		for _, stmt := range qry.Statements {
 			_, ok := stmt.(*influxql.CreateDatabaseStatement)
 			if !ok {
-				jsonError(w, http.StatusBadRequest, "query not supported, relay only supports CREATE DATABASE queries")
+				jsonResponse(w, http.StatusBadRequest, "query not supported, relay only supports CREATE DATABASE queries")
 				return
 			}
 		}
@@ -165,7 +184,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// fail early if we're missing the database
 	if !isQuery && queryParams.Get("db") == "" {
-		jsonError(w, http.StatusBadRequest, "missing parameter: db")
+		jsonResponse(w, http.StatusBadRequest, "missing parameter: db")
 		return
 	}
 
@@ -178,7 +197,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Content-Encoding") == "gzip" {
 		b, err := gzip.NewReader(r.Body)
 		if err != nil {
-			jsonError(w, http.StatusBadRequest, "unable to decode gzip body")
+			jsonResponse(w, http.StatusBadRequest, "unable to decode gzip body")
 		}
 		defer b.Close()
 		body = b
@@ -188,7 +207,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, err := bodyBuf.ReadFrom(body)
 	if err != nil {
 		putBuf(bodyBuf)
-		jsonError(w, http.StatusInternalServerError, "problem reading request body")
+		jsonResponse(w, http.StatusInternalServerError, "problem reading request body")
 		return
 	}
 
@@ -196,7 +215,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	points, err := models.ParsePointsWithPrecision(bodyBuf.Bytes(), start, precision)
 	if err != nil {
 		putBuf(bodyBuf)
-		jsonError(w, http.StatusBadRequest, "unable to parse points")
+		jsonResponse(w, http.StatusBadRequest, "unable to parse points")
 		return
 	}
 
@@ -215,7 +234,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		putBuf(outBuf)
-		jsonError(w, http.StatusInternalServerError, "problem writing points")
+		jsonResponse(w, http.StatusInternalServerError, "problem writing points")
 		return
 	}
 
@@ -276,7 +295,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// no successful writes
 	if errResponse == nil {
 		// failed to make any valid request...
-		jsonError(w, http.StatusServiceUnavailable, "unable to write points")
+		jsonResponse(w, http.StatusServiceUnavailable, "unable to write points")
 		return
 	}
 
@@ -304,9 +323,14 @@ func (rd *responseData) Write(w http.ResponseWriter) {
 	w.Write(rd.Body)
 }
 
-func jsonError(w http.ResponseWriter, code int, message string) {
+func jsonResponse(w http.ResponseWriter, code int, message string) {
+	var data string
+	if code/100 != 2 {
+		data = fmt.Sprintf("{\"error\":%q}\n", message)
+	} else {
+		data = fmt.Sprintf("{%s}\n", message)
+	}
 	w.Header().Set("Content-Type", "application/json")
-	data := fmt.Sprintf("{\"error\":%q}\n", message)
 	w.Header().Set("Content-Length", fmt.Sprint(len(data)))
 	w.WriteHeader(code)
 	w.Write([]byte(data))
@@ -314,6 +338,7 @@ func jsonError(w http.ResponseWriter, code int, message string) {
 
 type poster interface {
 	post([]byte, string, string, bool) (*responseData, error)
+	getStats() map[string]string
 }
 
 type simplePoster struct {
@@ -342,6 +367,12 @@ func newSimplePoster(location string, timeout time.Duration, skipTLSVerification
 		write: location,
 		query: qryURL.String(),
 	}
+}
+
+func (s *simplePoster) getStats() map[string]string {
+	v := make(map[string]string)
+	v["location"] = s.write
+	return v
 }
 
 func (b *simplePoster) post(buf []byte, query string, auth string, q bool) (*responseData, error) {

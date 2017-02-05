@@ -98,7 +98,7 @@ type Collectd2HTTPConfig struct {
 
 	// Outputs is a list of backend servers where writes will be forwarded
 	//Shards []Collectd2HTTPShardConfig`toml:"shards"`
-	Outputs []HTTPOutputConfig`toml:"output"`
+	Outputs []HTTPOutputConfig `toml:"output"`
 }
 
 /*type Collectd2HTTPShardConfig struct {
