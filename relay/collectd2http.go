@@ -184,6 +184,7 @@ func (u *Collectd2HTTP) handlePacket(udpPacket *packet) {
 	collectd := collectd.NewService(config)
 	for _, packet := range *packets {
 		for _, point := range collectd.UnmarshalCollectd(&packet) {
+			u.sanitizePoint(point)
 			shard := u.shardsColl.GetShardForPoint(point)
 			if shard == nil {
 				log.Print("No shard found for point: " + point.String())
@@ -193,6 +194,24 @@ func (u *Collectd2HTTP) handlePacket(udpPacket *packet) {
 		}
 	}
 
+}
+
+// Sanitize a data point. For now, if the host field contains a ':' it will
+// split the host into a host and subhost field using the ':' as separator.
+// TODO: Ultimately this should be done by a user-definable LUA script
+func (u *Collectd2HTTP) sanitizePoint(p models.Point) {
+	host, ok := p.Tags()["host"]
+	if !ok {
+		return
+	}
+
+	parts := strings.Split(host, ":")
+	if len(parts) < 2 {
+		return
+	}
+
+	p.AddTag("host", parts[0])
+	p.AddTag("subhost", parts[1])
 }
 
 func (u *Collectd2HTTP) Stop() error {
