@@ -98,15 +98,25 @@ type Collectd2HTTPConfig struct {
 
 	// Outputs is a list of backend servers where writes will be forwarded
 	Shards []Collectd2HTTPShardConfig `toml:"shardsColl"`
+
+	ShardAssignmentStore ShardAssignmentStore `toml:"shard-assignment-store"`
 }
 
 type Collectd2HTTPShardConfig struct {
 	// Name identifies the UDP backend
 	Name string `toml:"name"`
 
-	ProvisionWeight uint32 `toml:"provision_weight"`
+	ProvisionWeight uint32 `toml:"provision-weight"`
 
 	Outputs []HTTPOutputConfig `toml:"output"`
+}
+
+type ShardAssignmentStore struct {
+	Type string `toml:"type"`
+
+	Endpoints []string `toml:"endpoints"`
+
+	EtcdPrefix string `toml:"etcd-prefix"`
 }
 
 // LoadConfigFile parses the specified file into a Config object

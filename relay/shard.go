@@ -2,12 +2,9 @@ package relay
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/influxdata/influxdb/models"
 
-	cache "github.com/Freeaqingme/go-cache"
-	"github.com/aristanetworks/goarista/monotime"
 	"github.com/twmb/murmur3"
 )
 
@@ -15,8 +12,7 @@ type shardCollection struct {
 	shards []shard
 
 	sumOfProvisionWeights int
-	allocationCache       *cache.Cache
-	startTime             uint64
+	assignmentStore       *assignmentStore
 }
 
 type shard struct {
@@ -25,13 +21,7 @@ type shard struct {
 	backends        []httpBackend
 }
 
-type allocationCacheItem struct {
-	key        string
-	value      *shard
-	accessTime uint64
-}
-
-func NewShardCollection(shardConfigs []Collectd2HTTPShardConfig) (*shardCollection, error) {
+func NewShardCollection(shardConfigs []Collectd2HTTPShardConfig, etcdCfg ShardAssignmentStore) (*shardCollection, error) {
 	collection := &shardCollection{}
 	if len(shardConfigs) == 0 {
 		return nil, fmt.Errorf("No shards defined for shard collection")
@@ -47,10 +37,11 @@ func NewShardCollection(shardConfigs []Collectd2HTTPShardConfig) (*shardCollecti
 		collection.sumOfProvisionWeights += shard.provisionWeight
 	}
 
-	collection.startTime = monotime.Now()
-	collection.allocationCache = cache.New(90*time.Minute, 1*time.Minute)
-	collection.allocationCache.OnEvicted(collection.reinsertEvictingCacheItem)
-
+	store, err := newShardAssignmentStore(etcdCfg, collection.shards)
+	if err != nil {
+		return nil, err
+	}
+	collection.assignmentStore = store
 	return collection, nil
 }
 
@@ -79,29 +70,15 @@ func (c *shardCollection) Shards() []shard {
 
 func (c *shardCollection) GetShardForPoint(p models.Point) (shard *shard) {
 	shardKey := c.GetShardKey(p)
-	res, found := c.allocationCache.GetPossiblyExpired(shardKey)
-	if found {
-		item := res.(*allocationCacheItem)
-		item.accessTime = monotime.Now()
-		return item.value
+	if shard = c.assignmentStore.Get(shardKey); shard != nil {
+		return shard
 	}
 
-	// TODO: Retrieve from persistent cache (etcd)
-
-	if shard == nil {
-		shard = c.GetNewShardForPoint(shardKey, p)
+	shard = c.GetNewShardForPoint(shardKey, p)
+	if shard != nil {
+		c.assignmentStore.Set(shardKey, shard)
 	}
 
-	if shard == nil {
-		return nil
-	}
-
-	cacheItem := &allocationCacheItem{
-		key:        shardKey,
-		value:      shard,
-		accessTime: monotime.Now(),
-	}
-	c.allocationCache.Set(shardKey, cacheItem, cache.DefaultExpiration)
 	return shard
 }
 
@@ -126,23 +103,12 @@ func (c *shardCollection) GetNewShardForPoint(shardKey string, p models.Point) *
 
 // TODO: Ideally we do this more dynamically in LUA
 func (c *shardCollection) GetShardKey(p models.Point) string {
+	if subhost, exists := p.Tags()["subhost"]; exists {
+		return subhost + "__" + p.Name()
+	}
 	return p.Tags()["host"] + "__" + p.Name()
 }
 
 func (s *shard) Name() string {
 	return s.name
-}
-
-// Don't evict keys if they were used in the past 65 minutes,
-// or if the application has only been running for <65 minutes
-// (since monotime should be considered relative to startup time.
-func (c *shardCollection) reinsertEvictingCacheItem(key string, value interface{}) {
-	item := value.(*allocationCacheItem)
-	if monotime.Since(c.startTime) < 65*time.Minute {
-		item.accessTime = monotime.Now()
-	} else if monotime.Since(item.accessTime) > 65*time.Minute {
-		return // evict
-	}
-
-	c.allocationCache.Set(key, item, cache.DefaultExpiration)
 }

@@ -58,7 +58,7 @@ func NewCollectd2Http(config Collectd2HTTPConfig) (Relay, error) {
 	}
 	u.collectdTypes = &types
 
-	u.shardsColl, err = NewShardCollection(config.Shards)
+	u.shardsColl, err = NewShardCollection(config.Shards, config.ShardAssignmentStore)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +123,7 @@ func (u *Collectd2HTTP) batchPoints(shard shard) {
 	ticker := time.Tick(500 * time.Millisecond)
 
 	submitBatch := func() {
-		log.Printf("Submitting batch of length in shard '%s': %d (%d)\n", shard.Name(), len(batch), batchLen)
+		log.Printf("Submitting batch in shard '%s' of length: %d (%d)\n", shard.Name(), len(batch), batchLen)
 
 		payload := []byte(strings.Join(batch, "\n") + "\n")
 		wg := &sync.WaitGroup{}
