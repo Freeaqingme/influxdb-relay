@@ -129,7 +129,7 @@ func (u *Collectd2HTTP) batchPoints(shard shard) {
 		wg := &sync.WaitGroup{}
 		for _, b := range shard.backends {
 			wg.Add(1)
-			go func(b *httpBackend, wg *sync.WaitGroup) {
+			go func(b httpBackend, wg *sync.WaitGroup) {
 				resp, err := b.post(payload, "", "", false)
 				if err != nil {
 					log.Printf("Problem posting to relay %q backend %q: %v", u.Name(), b.name, err)
@@ -139,7 +139,7 @@ func (u *Collectd2HTTP) batchPoints(shard shard) {
 					}
 				}
 				wg.Done()
-			}(&b, wg)
+			}(b, wg)
 		}
 		wg.Wait()
 		batch = make([]string, 0, 5000)
