@@ -73,7 +73,7 @@ func (c *assignmentStore) Get(shardKey string) *shard {
 		return item.value
 	}
 
-	shard := c.getShardForPointFromEtcd(shardKey)
+	shard := c.getShardFromEtcd(shardKey)
 	if shard != nil {
 		c.storeInMemory(shardKey, shard)
 	}
@@ -114,7 +114,7 @@ func (c *assignmentStore) cacheAllocationInEtcd(shardKey, shardName string) erro
 	return nil
 }
 
-func (c *assignmentStore) getShardForPointFromEtcd(shardKey string) *shard {
+func (c *assignmentStore) getShardFromEtcd(shardKey string) *shard {
 	optRecursive := &etcdClient.GetOptions{
 		Recursive: true,
 		Quorum:    false,
@@ -138,16 +138,6 @@ func (c *assignmentStore) getShardForPointFromEtcd(shardKey string) *shard {
 	return nil
 }
 
-func (c *assignmentStore) renewEtcdValue(key string) {
-	renewOps := &etcdClient.SetOptions{
-		TTL:              EtcdTTL,
-		NoValueOnSuccess: true,
-		Refresh:          true,
-	}
-
-	c.etcdKapi.Set(context.Background(), key, "", renewOps)
-}
-
 // Reinsert an old item cache item if the application was just started
 // or if it cannot be refreshed through ETCD.
 func (c *assignmentStore) reinsertEvictingCacheItem(key string, value interface{}) {
@@ -164,13 +154,23 @@ func (c *assignmentStore) reinsertEvictingCacheItem(key string, value interface{
 		return // evict
 	}
 
-	// Refresh item from ETCD
+	// Refresh item from Etcd
 	shardFromEtcd := c.Get(key)
 
-	// If shard could not be refreshed from ETCD we reinsert the old one
+	// If shard could not be refreshed from Etcd we reinsert the old one
 	if shardFromEtcd == nil && monotime.Since(item.createTime) < 24*time.Hour {
 		c.memory.Set(key, item, c.getRandExpirationTime())
 	}
+}
+
+func (c *assignmentStore) renewEtcdValue(key string) {
+	renewOps := &etcdClient.SetOptions{
+		TTL:              EtcdTTL,
+		NoValueOnSuccess: true,
+		Refresh:          true,
+	}
+
+	c.etcdKapi.Set(context.Background(), key, "", renewOps)
 }
 
 func (c *assignmentStore) getMostRecentEtcdEntry(nodes etcdClient.Nodes) string {

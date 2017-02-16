@@ -103,8 +103,8 @@ func (c *shardCollection) GetNewShardForPoint(shardKey string, p models.Point) *
 
 // TODO: Ideally we do this more dynamically in LUA
 func (c *shardCollection) GetShardKey(p models.Point) string {
-	if subhost, exists := p.Tags()["subhost"]; exists {
-		return subhost + "__" + p.Name()
+	if vhost, exists := p.Tags()["vhost"]; exists {
+		return vhost + "__" + p.Name()
 	}
 	return p.Tags()["host"] + "__" + p.Name()
 }

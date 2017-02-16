@@ -211,7 +211,7 @@ func (u *Collectd2HTTP) sanitizePoint(p models.Point) {
 	}
 
 	p.AddTag("host", parts[0])
-	p.AddTag("subhost", parts[1])
+	p.AddTag("vhost", parts[1])
 }
 
 func (u *Collectd2HTTP) Stop() error {
