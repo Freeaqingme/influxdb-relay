@@ -2,7 +2,6 @@ package relay
 
 import (
 	"bytes"
-	"compress/gzip"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -34,7 +33,7 @@ type HTTP struct {
 	closing int64
 	l       net.Listener
 
-	backends []*httpBackend
+	shardsColl *shardCollection
 }
 
 const (
@@ -46,7 +45,7 @@ const (
 	MB = 1024 * KB
 )
 
-func NewHTTP(cfg HTTPConfig) (Relay, error) {
+func NewHTTP(cfg HTTPConfig, globalConf Config) (Relay, error) {
 	h := new(HTTP)
 
 	h.addr = cfg.Addr
@@ -60,13 +59,10 @@ func NewHTTP(cfg HTTPConfig) (Relay, error) {
 		h.schema = "https"
 	}
 
-	for i := range cfg.Outputs {
-		backend, err := newHTTPBackend(&cfg.Outputs[i])
-		if err != nil {
-			return nil, err
-		}
-
-		h.backends = append(h.backends, backend)
+	var err error
+	h.shardsColl, err = NewShardCollection(cfg.PersistenceName, globalConf)
+	if err != nil {
+		return nil, err
 	}
 
 	return h, nil
@@ -126,9 +122,9 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if reqPath == "/status" && (r.Method == "GET" || r.Method == "HEAD") {
 		st := make(map[string]map[string]string)
 
-		for _, b := range h.backends {
-			st[b.name] = b.poster.getStats()
-		}
+		//for _, b := range h.backends {
+		//	st[b.name] = b.poster.getStats()
+		//}
 
 		j, err := json.Marshal(st)
 
@@ -142,69 +138,56 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if reqPath != "/write" {
-		jsonResponse(w, http.StatusNotFound, "invalid write endpoint")
-		return
-	}
-
 	// We are using a flag to handle the create databases
 	isQuery := false
 	if reqPath == "/query" {
 		isQuery = true
 	}
 
-	if r.Method != "POST" {
-		w.Header().Set("Allow", "POST")
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusNoContent)
-		} else {
-			jsonResponse(w, http.StatusMethodNotAllowed, "invalid write method")
-		}
-		return
-	}
-
 	queryParams := r.URL.Query()
 
-	// Don't pass through non create queries
-	if isQuery {
-		// First check if there are multiple queries being passed
-		qry, err := influxql.ParseQuery(queryParams["q"][0])
-		if err != nil {
-			jsonResponse(w, http.StatusBadRequest, "invalid query")
-			return
-		}
-		for _, stmt := range qry.Statements {
-			_, ok := stmt.(*influxql.CreateDatabaseStatement)
-			if !ok {
-				jsonResponse(w, http.StatusBadRequest, "query not supported, relay only supports CREATE DATABASE queries")
-				return
-			}
-		}
-	}
-
-	// fail early if we're missing the database
-	if !isQuery && queryParams.Get("db") == "" {
-		jsonResponse(w, http.StatusBadRequest, "missing parameter: db")
+	// Updating data through the http backends has been disabled because it needs to be reimplemented
+	// in order to support shards. For now only querying will work.
+	if !isQuery {
+		jsonResponse(w, http.StatusBadRequest, "Only /query is supported")
 		return
 	}
 
-	if queryParams.Get("rp") == "" && h.rp != "" {
-		queryParams.Set("rp", h.rp)
+	qry, err := influxql.ParseQuery(queryParams["q"][0])
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, "invalid query")
+		return
 	}
 
-	var body = r.Body
+	if len(qry.Statements) != 1 {
+		jsonResponse(w, http.StatusBadRequest, "Query must contain a single statement")
+		return
+	}
 
-	if r.Header.Get("Content-Encoding") == "gzip" {
-		b, err := gzip.NewReader(r.Body)
-		if err != nil {
-			jsonResponse(w, http.StatusBadRequest, "unable to decode gzip body")
+	for _, stmt := range qry.Statements {
+		var ok bool
+		_, ok = stmt.(*influxql.SelectStatement)
+		if !ok {
+			jsonResponse(w, http.StatusBadRequest, "query not supported, relay only supports CREATE DATABASE queries")
+			return
 		}
-		defer b.Close()
-		body = b
+	}
+
+	var shardKey string
+	if shardKey = queryParams.Get("shardkey"); shardKey == "" {
+		jsonResponse(w, http.StatusBadRequest, "no shard key specified")
+		return
+	}
+
+	shard := h.shardsColl.GetAssignedShardForShardKey(shardKey)
+	if shard == nil {
+		jsonResponse(w, http.StatusBadRequest, "Such shard key does not exist")
+		return
 	}
 
 	bodyBuf := getBuf()
-	_, err := bodyBuf.ReadFrom(body)
+	body := r.Body
+	_, err = bodyBuf.ReadFrom(body)
 	if err != nil {
 		putBuf(bodyBuf)
 		jsonResponse(w, http.StatusInternalServerError, "problem reading request body")
@@ -231,75 +214,178 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// done with the input points
 	putBuf(bodyBuf)
-
-	if err != nil {
-		putBuf(outBuf)
-		jsonResponse(w, http.StatusInternalServerError, "problem writing points")
+	backend := shard.GetRandomReader()
+	if backend == nil {
+		jsonResponse(w, http.StatusBadRequest, "No reader backends available in shard")
 		return
 	}
 
-	// normalize query string
+	queryParams.Add("db", backend.db)
+
 	query := queryParams.Encode()
 
 	outBytes := outBuf.Bytes()
-
-	// check for authorization performed via the header
 	authHeader := r.Header.Get("Authorization")
 
-	var wg sync.WaitGroup
-	wg.Add(len(h.backends))
+	resp, err := backend.post(outBytes, query, authHeader, isQuery)
+	w.Header().Add("X-Backend", backend.name)
+	w.WriteHeader(resp.StatusCode)
+	w.Write(resp.Body)
 
-	var responses = make(chan *responseData, len(h.backends))
-
-	for _, b := range h.backends {
-		b := b
-		go func() {
-			defer wg.Done()
-			resp, err := b.post(outBytes, query, authHeader, isQuery)
-			if err != nil {
-				log.Printf("Problem posting to relay %q backend %q: %v", h.Name(), b.name, err)
-			} else {
-				if resp.StatusCode/100 == 5 {
-					log.Printf("5xx response for relay %q backend %q: %v", h.Name(), b.name, resp.StatusCode)
-				}
-				responses <- resp
-			}
-		}()
-	}
-
-	go func() {
-		wg.Wait()
-		close(responses)
-		putBuf(outBuf)
-	}()
-
-	var errResponse *responseData
-
-	for resp := range responses {
-		switch resp.StatusCode / 100 {
-		case 2:
-			w.WriteHeader(resp.StatusCode)
+	putBuf(outBuf)
+	/*
+		// Don't pass through non create queries
+		if reqPath != "/write" {
+			fmt.Println(reqPath, isQuery)
+			jsonResponse(w, http.StatusNotFound, "invalid write endpoint")
 			return
-
-		case 4:
-			// user error
-			resp.Write(w)
-			return
-
-		default:
-			// hold on to one of the responses to return back to the client
-			errResponse = resp
 		}
-	}
 
-	// no successful writes
-	if errResponse == nil {
-		// failed to make any valid request...
-		jsonResponse(w, http.StatusServiceUnavailable, "unable to write points")
-		return
-	}
+		if r.Method != "POST" {
+			w.Header().Set("Allow", "POST")
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusNoContent)
+			} else {
+				jsonResponse(w, http.StatusMethodNotAllowed, "invalid write method")
+			}
+			return
+		}
 
-	errResponse.Write(w)
+
+		if isQuery {
+			// First check if there are multiple queries being passed
+			qry, err := influxql.ParseQuery(queryParams["q"][0])
+			if err != nil {
+				jsonResponse(w, http.StatusBadRequest, "invalid query")
+				return
+			}
+			for _, stmt := range qry.Statements {
+				_, ok := stmt.(*influxql.CreateDatabaseStatement)
+				if !ok {
+					jsonResponse(w, http.StatusBadRequest, "query not supported, relay only supports CREATE DATABASE queries")
+					return
+				}
+			}
+		}
+
+		// fail early if we're missing the database
+		if !isQuery && queryParams.Get("db") == "" {
+			jsonResponse(w, http.StatusBadRequest, "missing parameter: db")
+			return
+		}
+
+		if queryParams.Get("rp") == "" && h.rp != "" {
+			queryParams.Set("rp", h.rp)
+		}
+
+		var body = r.Body
+
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			b, err := gzip.NewReader(r.Body)
+			if err != nil {
+				jsonResponse(w, http.StatusBadRequest, "unable to decode gzip body")
+			}
+			defer b.Close()
+			body = b
+		}
+
+		bodyBuf := getBuf()
+		_, err := bodyBuf.ReadFrom(body)
+		if err != nil {
+			putBuf(bodyBuf)
+			jsonResponse(w, http.StatusInternalServerError, "problem reading request body")
+			return
+		}
+
+		precision := queryParams.Get("precision")
+		points, err := models.ParsePointsWithPrecision(bodyBuf.Bytes(), start, precision)
+		if err != nil {
+			putBuf(bodyBuf)
+			jsonResponse(w, http.StatusBadRequest, "unable to parse points")
+			return
+		}
+
+		outBuf := getBuf()
+		for _, p := range points {
+			if _, err = outBuf.WriteString(p.PrecisionString(precision)); err != nil {
+				break
+			}
+			if err = outBuf.WriteByte('\n'); err != nil {
+				break
+			}
+		}
+
+		// done with the input points
+		putBuf(bodyBuf)
+
+		if err != nil {
+			putBuf(outBuf)
+			jsonResponse(w, http.StatusInternalServerError, "problem writing points")
+			return
+		}
+
+		// normalize query string
+		query := queryParams.Encode()
+
+		outBytes := outBuf.Bytes()
+
+		// check for authorization performed via the header
+		authHeader := r.Header.Get("Authorization")
+
+		var wg sync.WaitGroup
+		wg.Add(len(h.backends))
+
+		var responses = make(chan *responseData, len(h.backends))
+
+		for _, b := range h.backends {
+			b := b
+			go func() {
+				defer wg.Done()
+				resp, err := b.post(outBytes, query, authHeader, isQuery)
+				if err != nil {
+					log.Printf("Problem posting to relay %q backend %q: %v", h.Name(), b.name, err)
+				} else {
+					if resp.StatusCode/100 == 5 {
+						log.Printf("5xx response for relay %q backend %q: %v", h.Name(), b.name, resp.StatusCode)
+					}
+					responses <- resp
+				}
+			}()
+		}
+
+		go func() {
+			wg.Wait()
+			close(responses)
+			putBuf(outBuf)
+		}()
+
+		var errResponse *responseData
+
+		for resp := range responses {
+			switch resp.StatusCode / 100 {
+			case 2:
+				w.WriteHeader(resp.StatusCode)
+				return
+
+			case 4:
+				// user error
+				resp.Write(w)
+				return
+
+			default:
+				// hold on to one of the responses to return back to the client
+				errResponse = resp
+			}
+		}
+
+		// no successful writes
+		if errResponse == nil {
+			// failed to make any valid request...
+			jsonResponse(w, http.StatusServiceUnavailable, "unable to write points")
+			return
+		}
+
+		errResponse.Write(w)*/
 }
 
 type responseData struct {
@@ -420,7 +506,10 @@ func (b *simplePoster) post(buf []byte, query string, auth string, q bool) (*res
 
 type httpBackend struct {
 	poster
-	name string
+	name   string
+	writer bool
+	reader bool
+	db     string
 }
 
 func newHTTPBackend(cfg *HTTPOutputConfig) (*httpBackend, error) {
@@ -459,9 +548,33 @@ func newHTTPBackend(cfg *HTTPOutputConfig) (*httpBackend, error) {
 		p = newRetryBuffer(cfg.BufferSizeMB*MB, batch, max, p)
 	}
 
+	var writer, reader bool
+	switch cfg.Mode {
+	case "write":
+		writer = true
+	case "read":
+		return nil, fmt.Errorf("Read-only backends not implemented yet")
+		reader = true
+	case "readwrite":
+	case "":
+		writer = true
+		reader = true
+	default:
+		return nil, fmt.Errorf("mode for http backend must be one of: 'write', 'read' or 'readwrite'")
+	}
+
+	url, _ := url.Parse(cfg.Location)
+	db := url.Query().Get("db")
+	if db == "" {
+		return nil, fmt.Errorf("Backend location must include 'db' parameter")
+	}
+
 	return &httpBackend{
 		poster: p,
 		name:   cfg.Name,
+		reader: reader,
+		writer: writer,
+		db:     db,
 	}, nil
 }
 

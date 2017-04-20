@@ -15,7 +15,7 @@ func New(config Config) (*Service, error) {
 	s.relays = make(map[string]Relay)
 
 	for _, cfg := range config.HTTPRelays {
-		h, err := NewHTTP(cfg)
+		h, err := NewHTTP(cfg, config)
 		if err != nil {
 			return nil, err
 		}
@@ -37,7 +37,7 @@ func New(config Config) (*Service, error) {
 	}
 
 	for _, cfg := range config.Collectd2HTTPRelays {
-		u, err := NewCollectd2Http(cfg)
+		u, err := NewCollectd2Http(cfg, config)
 		if err != nil {
 			return nil, err
 		}

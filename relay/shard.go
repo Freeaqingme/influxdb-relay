@@ -2,6 +2,8 @@ package relay
 
 import (
 	"fmt"
+	"math/rand"
+	"time"
 
 	"github.com/influxdata/influxdb/models"
 
@@ -21,13 +23,35 @@ type shard struct {
 	backends        []httpBackend
 }
 
-func NewShardCollection(shardConfigs []Collectd2HTTPShardConfig, etcdCfg ShardAssignmentStore) (*shardCollection, error) {
-	collection := &shardCollection{}
-	if len(shardConfigs) == 0 {
-		return nil, fmt.Errorf("No shards defined for shard collection")
+func (s *shard) GetReaders() []httpBackend {
+	out := make([]httpBackend, 0)
+	for _, b := range s.backends {
+		if b.reader {
+			out = append(out, b)
+		}
 	}
 
-	for _, shardConfig := range shardConfigs {
+	return out
+}
+
+func (s *shard) GetRandomReader() *httpBackend {
+	readers := s.GetReaders()
+	if len(readers) == 0 {
+		return nil
+	}
+
+	rand.Seed(time.Now().UnixNano())
+	return &readers[rand.Intn(len(readers))]
+}
+
+func NewShardCollection(persistenceName string, globalConf Config) (*shardCollection, error) {
+	collection := &shardCollection{}
+	persistenceConf := collection.getPersistenceConf(persistenceName, globalConf)
+	if persistenceConf == nil {
+		return nil, fmt.Errorf("No persistence found by name '%s'", persistenceName)
+	}
+
+	for _, shardConfig := range persistenceConf.Shards {
 		if err := collection.AddShardFromConfig(&shardConfig); err != nil {
 			return nil, err
 		}
@@ -37,7 +61,7 @@ func NewShardCollection(shardConfigs []Collectd2HTTPShardConfig, etcdCfg ShardAs
 		collection.sumOfProvisionWeights += shard.provisionWeight
 	}
 
-	store, err := newShardAssignmentStore(etcdCfg, collection.shards)
+	store, err := newShardAssignmentStore(persistenceConf.ShardAssignmentStores, collection.shards)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +69,16 @@ func NewShardCollection(shardConfigs []Collectd2HTTPShardConfig, etcdCfg ShardAs
 	return collection, nil
 }
 
-func (c *shardCollection) AddShardFromConfig(cfg *Collectd2HTTPShardConfig) error {
+func (c *shardCollection) getPersistenceConf(persistenceName string, globalConf Config) *PersistenceConfig {
+	for _, persistenceConf := range globalConf.Persistence {
+		if persistenceConf.Name == persistenceName {
+			return &persistenceConf
+		}
+	}
+	return nil
+}
+
+func (c *shardCollection) AddShardFromConfig(cfg *ShardConfig) error {
 	shard := shard{
 		name:            cfg.Name,
 		provisionWeight: int(cfg.ProvisionWeight),
@@ -70,11 +103,16 @@ func (c *shardCollection) Shards() []shard {
 
 func (c *shardCollection) GetShardForPoint(p models.Point) (shard *shard) {
 	shardKey := c.GetShardKey(p)
-	if shard = c.assignmentStore.Get(shardKey); shard != nil {
+
+	return c.GetShardForShardKey(shardKey)
+}
+
+func (c *shardCollection) GetShardForShardKey(shardKey string) (shard *shard) {
+	if shard = c.GetAssignedShardForShardKey(shardKey); shard != nil {
 		return shard
 	}
 
-	shard = c.GetNewShardForPoint(shardKey, p)
+	shard = c.GetNewShardForShardKey(shardKey)
 	if shard != nil {
 		c.assignmentStore.Set(shardKey, shard)
 	}
@@ -82,8 +120,12 @@ func (c *shardCollection) GetShardForPoint(p models.Point) (shard *shard) {
 	return shard
 }
 
+func (c *shardCollection) GetAssignedShardForShardKey(shardKey string) (shard *shard) {
+	return c.assignmentStore.Get(shardKey)
+}
+
 // See also: http://eli.thegreenplace.net/2010/01/22/weighted-random-generation-in-python/
-func (c *shardCollection) GetNewShardForPoint(shardKey string, p models.Point) *shard {
+func (c *shardCollection) GetNewShardForShardKey(shardKey string) *shard {
 	if c.sumOfProvisionWeights == 0 {
 		return nil
 	}

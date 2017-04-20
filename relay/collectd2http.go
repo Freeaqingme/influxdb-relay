@@ -28,7 +28,7 @@ type Collectd2HTTP struct {
 	shardsColl    *shardCollection
 }
 
-func NewCollectd2Http(config Collectd2HTTPConfig) (Relay, error) {
+func NewCollectd2Http(config Collectd2HTTPConfig, globalConf Config) (Relay, error) {
 	u := new(Collectd2HTTP)
 
 	u.name = config.Name
@@ -58,7 +58,7 @@ func NewCollectd2Http(config Collectd2HTTPConfig) (Relay, error) {
 	}
 	u.collectdTypes = &types
 
-	u.shardsColl, err = NewShardCollection(config.Shards, config.ShardAssignmentStore)
+	u.shardsColl, err = NewShardCollection(config.PersistenceName, globalConf)
 	if err != nil {
 		return nil, err
 	}

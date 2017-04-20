@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"fmt"
 	"net/url"
 	"os"
 
@@ -11,6 +12,7 @@ type Config struct {
 	HTTPRelays          []HTTPConfig          `toml:"http"`
 	UDPRelays           []UDPConfig           `toml:"udp"`
 	Collectd2HTTPRelays []Collectd2HTTPConfig `toml:"collectd2http"`
+	Persistence         []PersistenceConfig   `toml:"persistence"`
 }
 
 type HTTPConfig struct {
@@ -27,7 +29,7 @@ type HTTPConfig struct {
 	DefaultRetentionPolicy string `toml:"default-retention-policy"`
 
 	// Outputs is a list of backed servers where writes will be forwarded
-	Outputs []HTTPOutputConfig `toml:"output"`
+	PersistenceName string `toml:"persistence"`
 }
 
 type HTTPOutputConfig struct {
@@ -54,6 +56,8 @@ type HTTPOutputConfig struct {
 	// Skip TLS verification in order to use self signed certificate.
 	// WARNING: It's insecure. Use it only for developing and don't use in production.
 	SkipTLSVerification bool `toml:"skip-tls-verification"`
+
+	Mode string `toml:"mode"`
 }
 
 type UDPConfig struct {
@@ -96,13 +100,16 @@ type Collectd2HTTPConfig struct {
 	// ReadBuffer sets the socket buffer for incoming connections
 	ReadBuffer int `toml:"read-buffer"`
 
-	// Outputs is a list of backend servers where writes will be forwarded
-	Shards []Collectd2HTTPShardConfig `toml:"shardsColl"`
-
-	ShardAssignmentStore ShardAssignmentStore `toml:"shard-assignment-store"`
+	PersistenceName string `toml:"persistence"`
 }
 
-type Collectd2HTTPShardConfig struct {
+type PersistenceConfig struct {
+	Name                  string               `toml:"name"`
+	Shards                []ShardConfig        `toml:"shards"`
+	ShardAssignmentStores ShardAssignmentStore `toml:"assignment-store"`
+}
+
+type ShardConfig struct {
 	// Name identifies the UDP backend
 	Name string `toml:"name"`
 
@@ -131,12 +138,19 @@ func LoadConfigFile(filename string) (cfg Config, err error) {
 		return
 	}
 	// Validate HTTP endpoints
-	for _, b := range cfg.HTTPRelays {
-		for _, o := range b.Outputs {
-			if _, err = url.ParseRequestURI(o.Location); err != nil {
-				return
+	for _, p := range cfg.Persistence {
+		if len(p.Shards) == 0 {
+			return cfg, fmt.Errorf("No shards defined for shard collection")
+		}
+
+		for _, s := range p.Shards {
+			for _, o := range s.Outputs {
+				if _, err = url.ParseRequestURI(o.Location); err != nil {
+					return
+				}
 			}
 		}
 	}
+
 	return
 }

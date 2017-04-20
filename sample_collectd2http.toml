@@ -4,16 +4,27 @@ name = "example-collectd2http"
 bind-addr = "127.1.1.1:25826"
 read-buffer = 0 # default
 typesdb = "/usr/share/collectd/types.db"
+persistence = "main"
+
+[[http]]
+name = "example-http"
+bind-addr = "127.0.0.1:9096"
+persistence = "main"
+
+[[persistence]]
+name = "main"
+assignment-store = { type="etcd", etcd-prefix="influxdb-relay/", endpoints = [
+        "http://127.0.0.1:2379"
+] }
 shards = [
     { name="shard1", provision-weight=100, output = [
             { name="local1-1", location = "http://127.0.0.1:8086/write?db=shard1_1", buffer-size-mb = 1024, max-batch-kb = 50, max-delay-interval = "30m" },
             { name="local1-2", location = "http://127.0.0.1:8086/write?db=shard1_1", buffer-size-mb = 1024, max-batch-kb = 50, max-delay-interval = "30m" },
-    ]},
+            { name="chronodium", location = "http://127.1.1.2:8087/write?db=main", buffer-size-mb = 1024, max-batch-kb = 50, max-delay-interval = "30m", mode = "write" }
+    ] },
     { name="shard2", provision-weight=100, output = [
             { name="local2-1", location = "http://127.0.0.1:8086/write?db=shard2_1", buffer-size-mb = 1024, max-batch-kb = 50, max-delay-interval = "30m"  },
             { name="local2-2", location = "http://127.0.0.1:8086/write?db=shard2_2", buffer-size-mb = 1024, max-batch-kb = 50, max-delay-interval = "30m"  },
+            { name="chronodium", location = "http://127.1.1.2:8087/write?db=main", buffer-size-mb = 1024, max-batch-kb = 50, max-delay-interval = "30m", mode = "write" }
     ]}
 ]
-shard-assignment-store = { type="etcd", etcd-prefix="influxdb-relay/", endpoints = [
-        "http://127.0.0.1:2379"
-] }
