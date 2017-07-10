@@ -3,6 +3,7 @@ package relay
 import (
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/influxdata/influxdb/models"
@@ -145,10 +146,18 @@ func (c *shardCollection) GetNewShardForShardKey(shardKey string) *shard {
 
 // TODO: Ideally we do this more dynamically in LUA
 func (c *shardCollection) GetShardKey(p models.Point) string {
+	suffix := p.Name()
+
+	// We want rx and tx to always end up in the same shard so they
+	// can always be queried together. Yet another good reason to
+	// implement LUA, for application specific stuff...
+	suffix = strings.Replace(suffix, "libvirt_tx", "libvirt_rxtx", 1)
+	suffix = strings.Replace(suffix, "libvirt_rx", "libvirt_rxtx", 1)
+
 	if vhost, exists := p.Tags()["vhost"]; exists {
-		return vhost + "__" + p.Name()
+		return vhost + "__" + suffix
 	}
-	return p.Tags()["host"] + "__" + p.Name()
+	return p.Tags()["host"] + "__" + suffix
 }
 
 func (s *shard) Name() string {
