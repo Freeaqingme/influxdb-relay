@@ -556,6 +556,7 @@ func newHTTPBackend(cfg *HTTPOutputConfig) (*httpBackend, error) {
 		return nil, fmt.Errorf("Read-only backends not implemented yet")
 		reader = true
 	case "readwrite":
+		fallthrough
 	case "":
 		writer = true
 		reader = true
