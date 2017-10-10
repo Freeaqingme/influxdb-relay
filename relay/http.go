@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"net/url"
 	"strconv"
 	"strings"
@@ -97,7 +98,15 @@ func (h *HTTP) Run() error {
 
 	log.Printf("Starting %s relay %q on %v", strings.ToUpper(h.schema), h.Name(), h.addr)
 
-	err = http.Serve(l, h)
+	r := http.NewServeMux()
+	r.HandleFunc("/", h.ServeHTTP)
+	r.HandleFunc("/debug/pprof/", pprof.Index)
+	r.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	r.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	r.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	r.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+	err = http.Serve(l, r)
 	if atomic.LoadInt64(&h.closing) != 0 {
 		return nil
 	}

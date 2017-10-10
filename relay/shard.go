@@ -154,6 +154,10 @@ func (c *shardCollection) GetShardKey(p models.Point) string {
 	suffix = strings.Replace(suffix, "libvirt_tx", "libvirt_rxtx", 1)
 	suffix = strings.Replace(suffix, "libvirt_rx", "libvirt_rxtx", 1)
 
+	// Same for _read & _write
+	suffix = strings.Replace(suffix, "libvirt_read", "libvirt_readwrite", 1)
+	suffix = strings.Replace(suffix, "libvirt_write", "libvirt_readwrite", 1)
+
 	if vhost, exists := p.Tags()["vhost"]; exists {
 		return vhost + "__" + suffix
 	}
